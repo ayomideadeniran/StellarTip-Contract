@@ -610,6 +610,38 @@ impl TipContract {
             .get(&DataKey::Tip(creator, index))
     }
 
+    /// Return a paginated list of tips for a creator.
+    pub fn get_tips(env: Env, creator: Address, start: u64, limit: u64) -> Vec<Tip> {
+        let mut results = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TipCount(creator.clone()))
+            .unwrap_or(0);
+        let end = (start + limit).min(count);
+        for i in start..end {
+            let key = DataKey::Tip(creator.clone(), i);
+            if let Some(tip) = env.storage().persistent().get(&key) {
+                extend_persistent_ttl(&env, &key);
+                results.push_back(tip);
+            }
+        }
+        results
+    }
+
+    /// Return the `CreatorProfile` for a given username.
+    pub fn get_profile_by_username(env: Env, username: Symbol) -> Option<CreatorProfile> {
+        if let Some(addr) = env
+            .storage()
+            .instance()
+            .get(&DataKey::UsernameToAddress(username))
+        {
+            env.storage().instance().get(&DataKey::Profile(addr))
+        } else {
+            None
+        }
+    }
+
     /// Return whether the given address is a registered creator.
     pub fn is_creator(env: Env, address: Address) -> bool {
         env.storage().instance().has(&DataKey::Profile(address))
