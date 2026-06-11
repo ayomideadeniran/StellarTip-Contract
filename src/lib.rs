@@ -70,6 +70,12 @@ mod error {
         TransferFailed = 5,
         InvalidAmount = 6,
         NoTips = 7,
+        NotInitialized = 8,
+        AlreadyInitialized = 9,
+        Paused = 10,
+        NotAuthorized = 11,
+        InvalidInput = 12,
+        BalanceNotEmpty = 13,
     }
 }
 
