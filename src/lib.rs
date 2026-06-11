@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -9,6 +9,14 @@ use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token,
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
+    /// Admin address with privileged access.
+    Admin,
+    /// Pause flag for emergency stop.
+    Paused,
+    /// Platform fee in basis points (0–10_000).
+    FeeBps,
+    /// Address that receives platform fees.
+    FeeRecipient,
     /// Creator profile keyed by the creator's `Address`.
     Profile(Address),
     /// Reverse lookup: `Symbol` (username) → `Address` (creator).
@@ -20,6 +28,8 @@ pub enum DataKey {
     TipCount(Address),
     /// Single tip record identified by `(creator Address, index)`.
     Tip(Address, u64),
+    /// List of tokens a creator has received tips in.
+    CreatorTokens(Address),
 }
 
 /// Public profile information for a creator.
@@ -60,10 +70,38 @@ mod error {
         TransferFailed = 5,
         InvalidAmount = 6,
         NoTips = 7,
+        NotInitialized = 8,
+        AlreadyInitialized = 9,
+        Paused = 10,
+        NotAuthorized = 11,
+        InvalidInput = 12,
+        BalanceNotEmpty = 13,
     }
 }
 
 use error::TipError;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Current contract version for client compatibility.
+pub const CONTRACT_VERSION: u32 = 1;
+
+/// Maximum platform fee in basis points (100% = 10_000 bps).
+const MAX_FEE_BPS: u32 = 10_000;
+
+/// Display name max length in bytes.
+const MAX_DISPLAY_NAME_LEN: u32 = 64;
+/// Bio max length in bytes.
+const MAX_BIO_LEN: u32 = 256;
+
+/// TTL threshold (ledgers) before extension is triggered.
+/// ~17_280 ledgers per day; 15 days.
+const TTL_THRESHOLD: u32 = 17_280 * 15;
+/// TTL extension target (ledgers).
+/// ~30 days.
+const TTL_EXTEND: u32 = 17_280 * 30;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -78,6 +116,68 @@ const EVENT_TIP_SENT: Symbol = soroban_sdk::symbol_short!("TIP");
 /// Emitted when a creator withdraws tokens.
 const EVENT_WITHDRAW: Symbol = soroban_sdk::symbol_short!("WDRW");
 
+/// Emitted when a creator updates their profile.
+const EVENT_PROFILE_UPDATED: Symbol = soroban_sdk::symbol_short!("PUPD");
+
+/// Emitted when a creator unregisters.
+const EVENT_CREATOR_UNREGISTERED: Symbol = soroban_sdk::symbol_short!("UREG");
+
+/// Emitted when the contract is paused.
+const EVENT_PAUSED: Symbol = soroban_sdk::symbol_short!("PAUS");
+
+/// Emitted when the contract is unpaused.
+const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");    /// Emitted when the platform fee is changed.
+    const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
+
+    /// Emitted when the admin is changed.
+    const EVENT_ADMIN_CHANGED: Symbol = soroban_sdk::symbol_short!("ADMC");
+
+    /// Emitted when the fee recipient is changed.
+    const EVENT_FEE_RECIPIENT_CHANGED: Symbol = soroban_sdk::symbol_short!("FERC");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extend the TTL of the contract instance storage.
+fn extend_instance_ttl(env: &Env) {
+    env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+}
+
+/// Extend the TTL of a persistent storage entry.
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND);
+}
+
+/// Verify the contract is initialized and not paused.
+fn check_initialized_and_not_paused(env: &Env) {
+    if !env.storage().instance().has(&DataKey::Admin) {
+        panic_with_error!(env, TipError::NotInitialized);
+    }
+    let is_paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if is_paused {
+        panic_with_error!(env, TipError::Paused);
+    }
+    extend_instance_ttl(env);
+}
+
+/// Validate string length constraints.
+fn validate_input(env: &Env, _username: Option<Symbol>, display_name: &String, bio: &String) {
+    // Username is a Symbol which is already limited by the Soroban SDK
+    // to ScSymbol's max length (32 bytes), so we skip an explicit check here.
+    let _ = _username;
+    if display_name.len() > MAX_DISPLAY_NAME_LEN {
+        panic_with_error!(env, TipError::InvalidInput);
+    }
+    if bio.len() > MAX_BIO_LEN {
+        panic_with_error!(env, TipError::InvalidInput);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -87,6 +187,118 @@ pub struct TipContract;
 
 #[contractimpl]
 impl TipContract {
+    // -----------------------------------------------------------------------
+    // Initialization
+    // -----------------------------------------------------------------------
+
+    /// Initialize the contract with an admin, fee recipient, and platform fee.
+    ///
+    /// # Arguments
+    /// * `caller` – Address that becomes the admin (must authorize).
+    /// * `fee_recipient` – Address that receives platform fees.
+    /// * `fee_bps` – Platform fee in basis points (0–10_000).
+    pub fn init(env: Env, caller: Address, fee_recipient: Address, fee_bps: u32) {
+        caller.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic_with_error!(env, TipError::AlreadyInitialized);
+        }
+        if fee_bps > MAX_FEE_BPS {
+            panic_with_error!(env, TipError::InvalidInput);
+        }
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
+        env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        extend_instance_ttl(&env);
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin functions
+    // -----------------------------------------------------------------------
+
+    /// Transfer admin privileges to a new address.
+    pub fn set_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, TipError::NotInitialized));
+        if caller != current_admin {
+            panic_with_error!(env, TipError::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        extend_instance_ttl(&env);
+        env.events().publish((EVENT_ADMIN_CHANGED, caller), new_admin);
+    }
+
+    /// Pause the contract (emergency stop). Only admin can call.
+    pub fn pause(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, TipError::NotInitialized));
+        if caller != admin {
+            panic_with_error!(env, TipError::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+        extend_instance_ttl(&env);
+        env.events().publish((EVENT_PAUSED, caller), ());
+    }
+
+    /// Unpause the contract. Only admin can call.
+    pub fn unpause(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, TipError::NotInitialized));
+        if caller != admin {
+            panic_with_error!(env, TipError::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+        extend_instance_ttl(&env);
+        env.events().publish((EVENT_UNPAUSED, caller), ());
+    }
+
+    /// Set the platform fee percentage. Only admin can call.
+    pub fn set_fee_percentage(env: Env, caller: Address, fee_bps: u32) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, TipError::NotInitialized));
+        if caller != admin {
+            panic_with_error!(env, TipError::NotAuthorized);
+        }
+        if fee_bps > MAX_FEE_BPS {
+            panic_with_error!(env, TipError::InvalidInput);
+        }
+        env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        extend_instance_ttl(&env);
+        env.events().publish((EVENT_FEE_CHANGED, caller), fee_bps);
+    }
+
+    /// Set the fee recipient address. Only admin can call.
+    pub fn set_fee_recipient(env: Env, caller: Address, fee_recipient: Address) {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, TipError::NotInitialized));
+        if caller != admin {
+            panic_with_error!(env, TipError::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
+        extend_instance_ttl(&env);
+        env.events().publish((EVENT_FEE_RECIPIENT_CHANGED, caller), fee_recipient);
+    }
+
     // -----------------------------------------------------------------------
     // Registration
     // -----------------------------------------------------------------------
@@ -105,6 +317,8 @@ impl TipContract {
         bio: String,
     ) {
         caller.require_auth();
+        check_initialized_and_not_paused(&env);
+        validate_input(&env, Some(username.clone()), &display_name, &bio);
 
         // Each address can only register once.
         if env.storage().instance().has(&DataKey::Profile(caller.clone())) {
@@ -125,12 +339,78 @@ impl TipContract {
 
         env.storage().instance().set(&DataKey::Profile(caller.clone()), &profile);
         env.storage().instance().set(&DataKey::UsernameToAddress(username), &caller);
-        env.storage().instance().set(&DataKey::TipCount(caller.clone()), &0u64);
+        // TipCount moved to persistent storage for durability.
+        env.storage().persistent().set(&DataKey::TipCount(caller.clone()), &0u64);
+        extend_persistent_ttl(&env, &DataKey::TipCount(caller.clone()));
 
         env.events().publish(
             (EVENT_CREATOR_REGISTERED, caller),
             (profile.username, profile.registered_at),
         );
+    }
+
+    /// Update a creator's display name and bio.
+    pub fn update_profile(env: Env, caller: Address, display_name: String, bio: String) {
+        caller.require_auth();
+        check_initialized_and_not_paused(&env);
+        validate_input(&env, None, &display_name, &bio);
+
+        let mut profile: CreatorProfile = env
+            .storage()
+            .instance()
+            .get(&DataKey::Profile(caller.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, TipError::CreatorNotFound));
+
+        profile.display_name = display_name;
+        profile.bio = bio;
+
+        env.storage().instance().set(&DataKey::Profile(caller.clone()), &profile);
+        extend_instance_ttl(&env);
+
+        env.events().publish(
+            (EVENT_PROFILE_UPDATED, caller),
+            (profile.username, profile.display_name.clone()),
+        );
+    }
+
+    /// Unregister a creator. Requires all token balances to be zero.
+    pub fn unregister(env: Env, caller: Address) {
+        caller.require_auth();
+        check_initialized_and_not_paused(&env);
+
+        let profile: CreatorProfile = env
+            .storage()
+            .instance()
+            .get(&DataKey::Profile(caller.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, TipError::CreatorNotFound));
+
+        // Ensure all balances are zero.
+        let tokens_key = DataKey::CreatorTokens(caller.clone());
+        if let Some(tokens) = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<Address>>(&tokens_key)
+        {
+            for token in tokens.iter() {
+                let balance = env
+                    .storage()
+                    .persistent()
+                    .get::<_, i128>(&DataKey::Balance(caller.clone(), token))
+                    .unwrap_or(0);
+                if balance > 0 {
+                    panic_with_error!(env, TipError::BalanceNotEmpty);
+                }
+            }
+            env.storage().persistent().remove(&tokens_key);
+        }
+
+        let tip_count_key = DataKey::TipCount(caller.clone());
+        env.storage().persistent().remove(&tip_count_key);
+
+        env.storage().instance().remove(&DataKey::UsernameToAddress(profile.username));
+        env.storage().instance().remove(&DataKey::Profile(caller.clone()));
+
+        env.events().publish((EVENT_CREATOR_UNREGISTERED, caller), ());
     }
 
     // -----------------------------------------------------------------------
@@ -153,6 +433,7 @@ impl TipContract {
         message: String,
     ) -> u64 {
         from.require_auth();
+        check_initialized_and_not_paused(&env);
 
         if amount <= 0 {
             panic_with_error!(env, TipError::InvalidAmount);
@@ -163,11 +444,29 @@ impl TipContract {
             panic_with_error!(env, TipError::CreatorNotFound);
         }
 
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(0);
+        let fee = (amount * (fee_bps as i128)) / (MAX_FEE_BPS as i128);
+        let creator_amount = amount - fee;
+
         // 1. Transfer tokens from sender → this contract.
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&from, &env.current_contract_address(), &amount);
 
-        // 2. Credit the creator's internal balance.
+        // 2. Forward fee to recipient.
+        if fee > 0 {
+            let fee_recipient: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::FeeRecipient)
+                .unwrap();
+            token_client.transfer(&env.current_contract_address(), &fee_recipient, &fee);
+        }
+
+        // 3. Credit the creator's internal balance.
         let balance_key = DataKey::Balance(creator.clone(), token.clone());
         let current_balance: i128 = env
             .storage()
@@ -176,11 +475,29 @@ impl TipContract {
             .unwrap_or(0_i128);
         env.storage()
             .persistent()
-            .set(&balance_key, &(current_balance + amount));
+            .set(&balance_key, &(current_balance + creator_amount));
+        extend_persistent_ttl(&env, &balance_key);
 
-        // 3. Record the tip.
+        // 4. Track token for creator.
+        let tokens_key = DataKey::CreatorTokens(creator.clone());
+        let mut tokens: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&tokens_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !tokens.contains(&token) {
+            tokens.push_back(token.clone());
+            env.storage().persistent().set(&tokens_key, &tokens);
+        }
+        extend_persistent_ttl(&env, &tokens_key);
+
+        // 5. Record the tip.
         let tip_count_key = DataKey::TipCount(creator.clone());
-        let index: u64 = env.storage().instance().get(&tip_count_key).unwrap_or(0);
+        let index: u64 = env
+            .storage()
+            .persistent()
+            .get(&tip_count_key)
+            .unwrap_or(0);
         let tip = Tip {
             from: from.clone(),
             token: token.clone(),
@@ -191,14 +508,16 @@ impl TipContract {
         env.storage()
             .persistent()
             .set(&DataKey::Tip(creator.clone(), index), &tip);
+        extend_persistent_ttl(&env, &DataKey::Tip(creator.clone(), index));
         env.storage()
-            .instance()
+            .persistent()
             .set(&tip_count_key, &(index + 1));
+        extend_persistent_ttl(&env, &tip_count_key);
 
-        // 4. Emit event.
+        // 6. Emit event.
         env.events().publish(
             (EVENT_TIP_SENT, from.clone()),
-            (creator, token, amount, index),
+            (creator, token, amount, fee, index),
         );
 
         index
@@ -212,6 +531,12 @@ impl TipContract {
     /// accumulated tips.  The caller must be a registered creator.
     pub fn withdraw(env: Env, caller: Address, token: Address, amount: i128) {
         caller.require_auth();
+        check_initialized_and_not_paused(&env);
+
+        // Verify caller is a registered creator.
+        if !env.storage().instance().has(&DataKey::Profile(caller.clone())) {
+            panic_with_error!(env, TipError::CreatorNotFound);
+        }
 
         if amount <= 0 {
             panic_with_error!(env, TipError::InvalidAmount);
@@ -234,12 +559,39 @@ impl TipContract {
 
         // Update balance.
         let remaining = current_balance - amount;
+        let tokens_key = DataKey::CreatorTokens(caller.clone());
         if remaining > 0 {
             env.storage()
                 .persistent()
                 .set(&balance_key, &remaining);
+            extend_persistent_ttl(&env, &balance_key);
+            extend_persistent_ttl(&env, &tokens_key);
         } else {
             env.storage().persistent().remove(&balance_key);
+            // Remove token from CreatorTokens when balance is fully withdrawn.
+            let mut tokens: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&tokens_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut pos = None;
+            for i in 0..tokens.len() {
+                if let Some(t) = tokens.get(i) {
+                    if t == token {
+                        pos = Some(i);
+                        break;
+                    }
+                }
+            }
+            if let Some(i) = pos {
+                tokens.remove(i);
+                if tokens.is_empty() {
+                    env.storage().persistent().remove(&tokens_key);
+                } else {
+                    env.storage().persistent().set(&tokens_key, &tokens);
+                    extend_persistent_ttl(&env, &tokens_key);
+                }
+            }
         }
 
         // Emit event.
@@ -279,7 +631,7 @@ impl TipContract {
     /// Return the total number of tips a creator has ever received.
     pub fn get_tip_count(env: Env, creator: Address) -> u64 {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TipCount(creator))
             .unwrap_or(0)
     }
@@ -289,6 +641,38 @@ impl TipContract {
         env.storage()
             .persistent()
             .get(&DataKey::Tip(creator, index))
+    }
+
+    /// Return a paginated list of tips for a creator.
+    pub fn get_tips(env: Env, creator: Address, start: u64, limit: u64) -> Vec<Tip> {
+        let mut results = Vec::new(&env);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TipCount(creator.clone()))
+            .unwrap_or(0);
+        let end = (start + limit).min(count);
+        for i in start..end {
+            let key = DataKey::Tip(creator.clone(), i);
+            if let Some(tip) = env.storage().persistent().get(&key) {
+                extend_persistent_ttl(&env, &key);
+                results.push_back(tip);
+            }
+        }
+        results
+    }
+
+    /// Return the `CreatorProfile` for a given username.
+    pub fn get_profile_by_username(env: Env, username: Symbol) -> Option<CreatorProfile> {
+        if let Some(addr) = env
+            .storage()
+            .instance()
+            .get(&DataKey::UsernameToAddress(username))
+        {
+            env.storage().instance().get(&DataKey::Profile(addr))
+        } else {
+            None
+        }
     }
 
     /// Return whether the given address is a registered creator.
@@ -301,6 +685,43 @@ impl TipContract {
         env.storage()
             .instance()
             .has(&DataKey::UsernameToAddress(username))
+    }
+
+    /// Return the list of tokens a creator has received tips in.
+    pub fn get_all_tokens(env: Env, creator: Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CreatorTokens(creator))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return the contract version.
+    pub fn get_contract_version(env: Env) -> u32 {
+        let _ = env; // suppress unused warning when version is a const
+        CONTRACT_VERSION
+    }
+
+    /// Return the admin address.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Return whether the contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Return the current platform fee in basis points.
+    pub fn get_fee_percentage(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
+    }
+
+    /// Return the fee recipient address.
+    pub fn get_fee_recipient(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::FeeRecipient)
     }
 }
 

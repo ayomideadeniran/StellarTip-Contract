@@ -1,10 +1,22 @@
-.PHONY: build test clean deploy-testnet deploy-mainnet
+.PHONY: build test clean fmt lint check wasm-build deploy-testnet deploy-mainnet
 
 build:
 	cargo build --release
 
+wasm-build:
+	cargo build --release --target wasm32-unknown-unknown
+
 test:
 	cargo test
+
+fmt:
+	cargo fmt --all
+
+lint:
+	cargo clippy --target wasm32-unknown-unknown --release -- -D warnings
+
+check: fmt lint test wasm-build
+	@echo "All checks passed!"
 
 clean:
 	rm -rf target
