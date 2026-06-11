@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol, Vec};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -126,10 +126,14 @@ const EVENT_CREATOR_UNREGISTERED: Symbol = soroban_sdk::symbol_short!("UREG");
 const EVENT_PAUSED: Symbol = soroban_sdk::symbol_short!("PAUS");
 
 /// Emitted when the contract is unpaused.
-const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");
+const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");    /// Emitted when the platform fee is changed.
+    const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
 
-/// Emitted when the platform fee is changed.
-const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
+    /// Emitted when the admin is changed.
+    const EVENT_ADMIN_CHANGED: Symbol = soroban_sdk::symbol_short!("ADMC");
+
+    /// Emitted when the fee recipient is changed.
+    const EVENT_FEE_RECIPIENT_CHANGED: Symbol = soroban_sdk::symbol_short!("FERC");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -190,17 +194,18 @@ impl TipContract {
     /// Initialize the contract with an admin, fee recipient, and platform fee.
     ///
     /// # Arguments
-    /// * `admin` – Address with privileged control (pause, fee settings).
+    /// * `caller` – Address that becomes the admin (must authorize).
     /// * `fee_recipient` – Address that receives platform fees.
     /// * `fee_bps` – Platform fee in basis points (0–10_000).
-    pub fn init(env: Env, admin: Address, fee_recipient: Address, fee_bps: u32) {
+    pub fn init(env: Env, caller: Address, fee_recipient: Address, fee_bps: u32) {
+        caller.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(env, TipError::AlreadyInitialized);
         }
         if fee_bps > MAX_FEE_BPS {
             panic_with_error!(env, TipError::InvalidInput);
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &caller);
         env.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -224,6 +229,7 @@ impl TipContract {
         }
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         extend_instance_ttl(&env);
+        env.events().publish((EVENT_ADMIN_CHANGED, caller), new_admin);
     }
 
     /// Pause the contract (emergency stop). Only admin can call.
@@ -290,6 +296,7 @@ impl TipContract {
         }
         env.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
         extend_instance_ttl(&env);
+        env.events().publish((EVENT_FEE_RECIPIENT_CHANGED, caller), fee_recipient);
     }
 
     // -----------------------------------------------------------------------
@@ -510,7 +517,7 @@ impl TipContract {
         // 6. Emit event.
         env.events().publish(
             (EVENT_TIP_SENT, from.clone()),
-            (creator, token, amount, index),
+            (creator, token, amount, fee, index),
         );
 
         index
@@ -552,13 +559,39 @@ impl TipContract {
 
         // Update balance.
         let remaining = current_balance - amount;
+        let tokens_key = DataKey::CreatorTokens(caller.clone());
         if remaining > 0 {
             env.storage()
                 .persistent()
                 .set(&balance_key, &remaining);
             extend_persistent_ttl(&env, &balance_key);
+            extend_persistent_ttl(&env, &tokens_key);
         } else {
             env.storage().persistent().remove(&balance_key);
+            // Remove token from CreatorTokens when balance is fully withdrawn.
+            let mut tokens: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&tokens_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut pos = None;
+            for i in 0..tokens.len() {
+                if let Some(t) = tokens.get(i) {
+                    if t == token {
+                        pos = Some(i);
+                        break;
+                    }
+                }
+            }
+            if let Some(i) = pos {
+                tokens.remove(i);
+                if tokens.is_empty() {
+                    env.storage().persistent().remove(&tokens_key);
+                } else {
+                    env.storage().persistent().set(&tokens_key, &tokens);
+                    extend_persistent_ttl(&env, &tokens_key);
+                }
+            }
         }
 
         // Emit event.
@@ -598,7 +631,7 @@ impl TipContract {
     /// Return the total number of tips a creator has ever received.
     pub fn get_tip_count(env: Env, creator: Address) -> u64 {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TipCount(creator))
             .unwrap_or(0)
     }
