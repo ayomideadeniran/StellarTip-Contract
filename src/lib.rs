@@ -66,6 +66,28 @@ mod error {
 use error::TipError;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Current contract version for client compatibility.
+pub const CONTRACT_VERSION: u32 = 1;
+
+/// Maximum platform fee in basis points (100% = 10_000 bps).
+const MAX_FEE_BPS: u32 = 10_000;
+
+/// Display name max length in bytes.
+const MAX_DISPLAY_NAME_LEN: u32 = 64;
+/// Bio max length in bytes.
+const MAX_BIO_LEN: u32 = 256;
+
+/// TTL threshold (ledgers) before extension is triggered.
+/// ~17_280 ledgers per day; 15 days.
+const TTL_THRESHOLD: u32 = 17_280 * 15;
+/// TTL extension target (ledgers).
+/// ~30 days.
+const TTL_EXTEND: u32 = 17_280 * 30;
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -77,6 +99,64 @@ const EVENT_TIP_SENT: Symbol = soroban_sdk::symbol_short!("TIP");
 
 /// Emitted when a creator withdraws tokens.
 const EVENT_WITHDRAW: Symbol = soroban_sdk::symbol_short!("WDRW");
+
+/// Emitted when a creator updates their profile.
+const EVENT_PROFILE_UPDATED: Symbol = soroban_sdk::symbol_short!("PUPD");
+
+/// Emitted when a creator unregisters.
+const EVENT_CREATOR_UNREGISTERED: Symbol = soroban_sdk::symbol_short!("UREG");
+
+/// Emitted when the contract is paused.
+const EVENT_PAUSED: Symbol = soroban_sdk::symbol_short!("PAUS");
+
+/// Emitted when the contract is unpaused.
+const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");
+
+/// Emitted when the platform fee is changed.
+const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extend the TTL of the contract instance storage.
+fn extend_instance_ttl(env: &Env) {
+    env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+}
+
+/// Extend the TTL of a persistent storage entry.
+fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    env.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND);
+}
+
+/// Verify the contract is initialized and not paused.
+fn check_initialized_and_not_paused(env: &Env) {
+    if !env.storage().instance().has(&DataKey::Admin) {
+        panic_with_error!(env, TipError::NotInitialized);
+    }
+    let is_paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if is_paused {
+        panic_with_error!(env, TipError::Paused);
+    }
+    extend_instance_ttl(env);
+}
+
+/// Validate string length constraints.
+fn validate_input(env: &Env, _username: Option<Symbol>, display_name: &String, bio: &String) {
+    // Username is a Symbol which is already limited by the Soroban SDK
+    // to ScSymbol's max length (32 bytes), so we skip an explicit check here.
+    let _ = _username;
+    if display_name.len() > MAX_DISPLAY_NAME_LEN {
+        panic_with_error!(env, TipError::InvalidInput);
+    }
+    if bio.len() > MAX_BIO_LEN {
+        panic_with_error!(env, TipError::InvalidInput);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Contract
