@@ -1,5 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Symbol,
+    Vec,
+};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -126,14 +129,15 @@ const EVENT_CREATOR_UNREGISTERED: Symbol = soroban_sdk::symbol_short!("UREG");
 const EVENT_PAUSED: Symbol = soroban_sdk::symbol_short!("PAUS");
 
 /// Emitted when the contract is unpaused.
-const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");    /// Emitted when the platform fee is changed.
-    const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
+const EVENT_UNPAUSED: Symbol = soroban_sdk::symbol_short!("UNPA");
+/// Emitted when the platform fee is changed.
+const EVENT_FEE_CHANGED: Symbol = soroban_sdk::symbol_short!("FEEC");
 
-    /// Emitted when the admin is changed.
-    const EVENT_ADMIN_CHANGED: Symbol = soroban_sdk::symbol_short!("ADMC");
+/// Emitted when the admin is changed.
+const EVENT_ADMIN_CHANGED: Symbol = soroban_sdk::symbol_short!("ADMC");
 
-    /// Emitted when the fee recipient is changed.
-    const EVENT_FEE_RECIPIENT_CHANGED: Symbol = soroban_sdk::symbol_short!("FERC");
+/// Emitted when the fee recipient is changed.
+const EVENT_FEE_RECIPIENT_CHANGED: Symbol = soroban_sdk::symbol_short!("FERC");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,11 +158,7 @@ fn check_initialized_and_not_paused(env: &Env) {
     if !env.storage().instance().has(&DataKey::Admin) {
         panic_with_error!(env, TipError::NotInitialized);
     }
-    let is_paused: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false);
+    let is_paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
     if is_paused {
         panic_with_error!(env, TipError::Paused);
     }
@@ -343,10 +343,8 @@ impl TipContract {
         env.storage().persistent().set(&DataKey::TipCount(caller.clone()), &0u64);
         extend_persistent_ttl(&env, &DataKey::TipCount(caller.clone()));
 
-        env.events().publish(
-            (EVENT_CREATOR_REGISTERED, caller),
-            (profile.username, profile.registered_at),
-        );
+        env.events()
+            .publish((EVENT_CREATOR_REGISTERED, caller), (profile.username, profile.registered_at));
     }
 
     /// Update a creator's display name and bio.
@@ -386,11 +384,7 @@ impl TipContract {
 
         // Ensure all balances are zero.
         let tokens_key = DataKey::CreatorTokens(caller.clone());
-        if let Some(tokens) = env
-            .storage()
-            .persistent()
-            .get::<_, Vec<Address>>(&tokens_key)
-        {
+        if let Some(tokens) = env.storage().persistent().get::<_, Vec<Address>>(&tokens_key) {
             for token in tokens.iter() {
                 let balance = env
                     .storage()
@@ -444,11 +438,7 @@ impl TipContract {
             panic_with_error!(env, TipError::CreatorNotFound);
         }
 
-        let fee_bps: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::FeeBps)
-            .unwrap_or(0);
+        let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
         let fee = (amount * (fee_bps as i128)) / (MAX_FEE_BPS as i128);
         let creator_amount = amount - fee;
 
@@ -458,33 +448,21 @@ impl TipContract {
 
         // 2. Forward fee to recipient.
         if fee > 0 {
-            let fee_recipient: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::FeeRecipient)
-                .unwrap();
+            let fee_recipient: Address =
+                env.storage().instance().get(&DataKey::FeeRecipient).unwrap();
             token_client.transfer(&env.current_contract_address(), &fee_recipient, &fee);
         }
 
         // 3. Credit the creator's internal balance.
         let balance_key = DataKey::Balance(creator.clone(), token.clone());
-        let current_balance: i128 = env
-            .storage()
-            .persistent()
-            .get(&balance_key)
-            .unwrap_or(0_i128);
-        env.storage()
-            .persistent()
-            .set(&balance_key, &(current_balance + creator_amount));
+        let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0_i128);
+        env.storage().persistent().set(&balance_key, &(current_balance + creator_amount));
         extend_persistent_ttl(&env, &balance_key);
 
         // 4. Track token for creator.
         let tokens_key = DataKey::CreatorTokens(creator.clone());
-        let mut tokens: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&tokens_key)
-            .unwrap_or_else(|| Vec::new(&env));
+        let mut tokens: Vec<Address> =
+            env.storage().persistent().get(&tokens_key).unwrap_or_else(|| Vec::new(&env));
         if !tokens.contains(&token) {
             tokens.push_back(token.clone());
             env.storage().persistent().set(&tokens_key, &tokens);
@@ -493,11 +471,7 @@ impl TipContract {
 
         // 5. Record the tip.
         let tip_count_key = DataKey::TipCount(creator.clone());
-        let index: u64 = env
-            .storage()
-            .persistent()
-            .get(&tip_count_key)
-            .unwrap_or(0);
+        let index: u64 = env.storage().persistent().get(&tip_count_key).unwrap_or(0);
         let tip = Tip {
             from: from.clone(),
             token: token.clone(),
@@ -505,20 +479,13 @@ impl TipContract {
             message,
             timestamp: env.ledger().timestamp(),
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Tip(creator.clone(), index), &tip);
+        env.storage().persistent().set(&DataKey::Tip(creator.clone(), index), &tip);
         extend_persistent_ttl(&env, &DataKey::Tip(creator.clone(), index));
-        env.storage()
-            .persistent()
-            .set(&tip_count_key, &(index + 1));
+        env.storage().persistent().set(&tip_count_key, &(index + 1));
         extend_persistent_ttl(&env, &tip_count_key);
 
         // 6. Emit event.
-        env.events().publish(
-            (EVENT_TIP_SENT, from.clone()),
-            (creator, token, amount, fee, index),
-        );
+        env.events().publish((EVENT_TIP_SENT, from.clone()), (creator, token, amount, fee, index));
 
         index
     }
@@ -543,11 +510,7 @@ impl TipContract {
         }
 
         let balance_key = DataKey::Balance(caller.clone(), token.clone());
-        let current_balance: i128 = env
-            .storage()
-            .persistent()
-            .get(&balance_key)
-            .unwrap_or(0);
+        let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
 
         if current_balance < amount {
             panic_with_error!(env, TipError::InsufficientBalance);
@@ -561,19 +524,14 @@ impl TipContract {
         let remaining = current_balance - amount;
         let tokens_key = DataKey::CreatorTokens(caller.clone());
         if remaining > 0 {
-            env.storage()
-                .persistent()
-                .set(&balance_key, &remaining);
+            env.storage().persistent().set(&balance_key, &remaining);
             extend_persistent_ttl(&env, &balance_key);
             extend_persistent_ttl(&env, &tokens_key);
         } else {
             env.storage().persistent().remove(&balance_key);
             // Remove token from CreatorTokens when balance is fully withdrawn.
-            let mut tokens: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&tokens_key)
-                .unwrap_or_else(|| Vec::new(&env));
+            let mut tokens: Vec<Address> =
+                env.storage().persistent().get(&tokens_key).unwrap_or_else(|| Vec::new(&env));
             let mut pos = None;
             for i in 0..tokens.len() {
                 if let Some(t) = tokens.get(i) {
@@ -595,13 +553,8 @@ impl TipContract {
         }
 
         // Emit event.
-        env.events().publish(
-            (EVENT_WITHDRAW, caller.clone()),
-            (token, amount),
-        );
+        env.events().publish((EVENT_WITHDRAW, caller.clone()), (token, amount));
     }
-
-
 
     // -----------------------------------------------------------------------
     // View functions
@@ -615,42 +568,29 @@ impl TipContract {
 
     /// Return the creator `Address` that owns the given username, or `None`.
     pub fn get_creator_from_username(env: Env, username: Symbol) -> Option<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::UsernameToAddress(username))
+        env.storage().instance().get(&DataKey::UsernameToAddress(username))
     }
 
     /// Return the current balance of a specific token held for a creator.
     pub fn get_balance(env: Env, creator: Address, token: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Balance(creator, token))
-            .unwrap_or(0)
+        env.storage().persistent().get(&DataKey::Balance(creator, token)).unwrap_or(0)
     }
 
     /// Return the total number of tips a creator has ever received.
     pub fn get_tip_count(env: Env, creator: Address) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::TipCount(creator))
-            .unwrap_or(0)
+        env.storage().persistent().get(&DataKey::TipCount(creator)).unwrap_or(0)
     }
 
     /// Return a specific `Tip` record by its index.
     pub fn get_tip(env: Env, creator: Address, index: u64) -> Option<Tip> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Tip(creator, index))
+        env.storage().persistent().get(&DataKey::Tip(creator, index))
     }
 
     /// Return a paginated list of tips for a creator.
     pub fn get_tips(env: Env, creator: Address, start: u64, limit: u64) -> Vec<Tip> {
         let mut results = Vec::new(&env);
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TipCount(creator.clone()))
-            .unwrap_or(0);
+        let count: u64 =
+            env.storage().persistent().get(&DataKey::TipCount(creator.clone())).unwrap_or(0);
         let end = (start + limit).min(count);
         for i in start..end {
             let key = DataKey::Tip(creator.clone(), i);
@@ -664,11 +604,7 @@ impl TipContract {
 
     /// Return the `CreatorProfile` for a given username.
     pub fn get_profile_by_username(env: Env, username: Symbol) -> Option<CreatorProfile> {
-        if let Some(addr) = env
-            .storage()
-            .instance()
-            .get(&DataKey::UsernameToAddress(username))
-        {
+        if let Some(addr) = env.storage().instance().get(&DataKey::UsernameToAddress(username)) {
             env.storage().instance().get(&DataKey::Profile(addr))
         } else {
             None
@@ -682,9 +618,7 @@ impl TipContract {
 
     /// Return whether a given username has already been taken.
     pub fn is_username_taken(env: Env, username: Symbol) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::UsernameToAddress(username))
+        env.storage().instance().has(&DataKey::UsernameToAddress(username))
     }
 
     /// Return the list of tokens a creator has received tips in.
@@ -708,10 +642,7 @@ impl TipContract {
 
     /// Return whether the contract is paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
     /// Return the current platform fee in basis points.

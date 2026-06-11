@@ -2,9 +2,10 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
-    token, token::StellarAssetClient, Address, Env, String, Symbol,
+    token,
+    token::StellarAssetClient,
+    Address, Env, String, Symbol,
 };
-
 use token::Client as TokenClient;
 
 use crate::TipContract;
@@ -61,13 +62,7 @@ impl TestEnv {
         let sac = StellarAssetClient::new(&env, &token_id);
         sac.mint(&admin, &1_000_000_000);
 
-        let t = TestEnv {
-            env,
-            contract_id,
-            admin,
-            fee_recipient,
-            token_id,
-        };
+        let t = TestEnv { env, contract_id, admin, fee_recipient, token_id };
 
         // Initialize contract.
         t.tip_client().init(&t.admin, &t.fee_recipient, &0u32);
@@ -101,32 +96,26 @@ impl TestEnv {
         let sac = StellarAssetClient::new(&env, &token_id);
         sac.mint(&admin, &1_000_000_000);
 
-        let t = TestEnv {
-            env,
-            contract_id,
-            admin,
-            fee_recipient,
-            token_id,
-        };
+        let t = TestEnv { env, contract_id, admin, fee_recipient, token_id };
 
         t.tip_client().init(&t.admin, &t.fee_recipient, &fee_bps);
         t
     }
 
-    fn tip_client(&self) -> crate::TipContractClient {
+    fn tip_client(&self) -> crate::TipContractClient<'_> {
         crate::TipContractClient::new(&self.env, &self.contract_id)
     }
 
-    fn token_client(&self) -> token::Client {
+    fn token_client(&self) -> token::Client<'_> {
         token::Client::new(&self.env, &self.token_id)
     }
 
-    fn stellar_client(&self) -> StellarAssetClient {
+    fn stellar_client(&self) -> StellarAssetClient<'_> {
         StellarAssetClient::new(&self.env, &self.token_id)
     }
 
     /// Deploy a second token for multi-token testing.
-    fn deploy_second_token(&self) -> (Address, TokenClient, StellarAssetClient) {
+    fn deploy_second_token(&self) -> (Address, TokenClient<'_>, StellarAssetClient<'_>) {
         let token_admin = Address::generate(&self.env);
         let token_contract = self.env.register_stellar_asset_contract_v2(token_admin.clone());
         let id = token_contract.address();
@@ -318,19 +307,13 @@ fn test_register_creates_profile() {
     assert_eq!(profile.registered_at, 1000);
 
     assert!(t.tip_client().is_creator(&alice));
-    assert!(t
-        .tip_client()
-        .is_username_taken(&Symbol::new(&t.env, "alice")));
+    assert!(t.tip_client().is_username_taken(&Symbol::new(&t.env, "alice")));
 
-    let resolved = t
-        .tip_client()
-        .get_creator_from_username(&Symbol::new(&t.env, "alice"));
+    let resolved = t.tip_client().get_creator_from_username(&Symbol::new(&t.env, "alice"));
     assert_eq!(resolved, Some(alice));
 
     // get_profile_by_username convenience
-    let by_username = t
-        .tip_client()
-        .get_profile_by_username(&Symbol::new(&t.env, "alice"));
+    let by_username = t.tip_client().get_profile_by_username(&Symbol::new(&t.env, "alice"));
     assert_eq!(by_username, Some(profile));
 }
 
@@ -369,12 +352,7 @@ fn test_register_duplicate_username_fails() {
         &s(&t.env, ""),
     );
 
-    t.tip_client().register(
-        &bob,
-        &Symbol::new(&t.env, "popstar"),
-        &s(&t.env, "B"),
-        &s(&t.env, ""),
-    );
+    t.tip_client().register(&bob, &Symbol::new(&t.env, "popstar"), &s(&t.env, "B"), &s(&t.env, ""));
 }
 
 #[test]
@@ -383,12 +361,7 @@ fn test_register_display_name_too_long_fails() {
     let t = TestEnv::new();
     let alice = Address::generate(&t.env);
     let long_name = s(&t.env, &"a".repeat(65));
-    t.tip_client().register(
-        &alice,
-        &Symbol::new(&t.env, "alice"),
-        &long_name,
-        &s(&t.env, ""),
-    );
+    t.tip_client().register(&alice, &Symbol::new(&t.env, "alice"), &long_name, &s(&t.env, ""));
 }
 
 #[test]
@@ -397,12 +370,7 @@ fn test_register_bio_too_long_fails() {
     let t = TestEnv::new();
     let alice = Address::generate(&t.env);
     let long_bio = s(&t.env, &"a".repeat(257));
-    t.tip_client().register(
-        &alice,
-        &Symbol::new(&t.env, "alice"),
-        &s(&t.env, "Alice"),
-        &long_bio,
-    );
+    t.tip_client().register(&alice, &Symbol::new(&t.env, "alice"), &s(&t.env, "Alice"), &long_bio);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,11 +404,7 @@ fn test_update_profile() {
 fn test_update_profile_not_creator_fails() {
     let t = TestEnv::new();
     let rando = Address::generate(&t.env);
-    t.tip_client().update_profile(
-        &rando,
-        &s(&t.env, "X"),
-        &s(&t.env, ""),
-    );
+    t.tip_client().update_profile(&rando, &s(&t.env, "X"), &s(&t.env, ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -461,9 +425,7 @@ fn test_unregister_removes_profile() {
     t.tip_client().unregister(&alice);
 
     assert!(!t.tip_client().is_creator(&alice));
-    assert!(!t
-        .tip_client()
-        .is_username_taken(&Symbol::new(&t.env, "alice")));
+    assert!(!t.tip_client().is_username_taken(&Symbol::new(&t.env, "alice")));
     assert_eq!(t.tip_client().get_profile(&alice), None);
     assert_eq!(t.tip_client().get_tip_count(&alice), 0);
 }
@@ -527,19 +489,10 @@ fn test_tip_transfers_tokens() {
     let bob_balance_before = t.token_client().balance(&bob);
     let contract_balance_before = t.token_client().balance(&t.contract_id);
 
-    t.tip_client().tip(
-        &bob,
-        &alice,
-        &t.token_id,
-        &500,
-        &s(&t.env, "Great work!"),
-    );
+    t.tip_client().tip(&bob, &alice, &t.token_id, &500, &s(&t.env, "Great work!"));
 
     assert_eq!(t.token_client().balance(&bob), bob_balance_before - 500);
-    assert_eq!(
-        t.token_client().balance(&t.contract_id),
-        contract_balance_before + 500
-    );
+    assert_eq!(t.token_client().balance(&t.contract_id), contract_balance_before + 500);
 
     let balance = t.tip_client().get_balance(&alice, &t.token_id);
     assert_eq!(balance, 500);
@@ -588,13 +541,7 @@ fn test_tip_records_history() {
 
     t.stellar_client().mint(&bob, &10_000);
 
-    let index = t.tip_client().tip(
-        &bob,
-        &alice,
-        &t.token_id,
-        &300,
-        &s(&t.env, "💜"),
-    );
+    let index = t.tip_client().tip(&bob, &alice, &t.token_id, &300, &s(&t.env, "💜"));
 
     assert_eq!(index, 0);
     assert_eq!(t.tip_client().get_tip_count(&alice), 1);
@@ -609,13 +556,7 @@ fn test_tip_records_history() {
     let charlie = Address::generate(&t.env);
     t.stellar_client().mint(&charlie, &10_000);
 
-    let index2 = t.tip_client().tip(
-        &charlie,
-        &alice,
-        &t.token_id,
-        &200,
-        &s(&t.env, ""),
-    );
+    let index2 = t.tip_client().tip(&charlie, &alice, &t.token_id, &200, &s(&t.env, ""));
     assert_eq!(index2, 1);
     assert_eq!(t.tip_client().get_tip_count(&alice), 2);
 }
@@ -635,13 +576,7 @@ fn test_get_tips_pagination() {
     for _ in 0..5 {
         let supporter = Address::generate(&t.env);
         t.stellar_client().mint(&supporter, &10_000);
-        t.tip_client().tip(
-            &supporter,
-            &alice,
-            &t.token_id,
-            &100,
-            &s(&t.env, "tip"),
-        );
+        t.tip_client().tip(&supporter, &alice, &t.token_id, &100, &s(&t.env, "tip"));
     }
 
     assert_eq!(t.tip_client().get_tip_count(&alice), 5);
@@ -679,12 +614,7 @@ fn test_tip_zero_amount_fails() {
     let alice = Address::generate(&t.env);
     let bob = Address::generate(&t.env);
 
-    t.tip_client().register(
-        &alice,
-        &Symbol::new(&t.env, "alice"),
-        &s(&t.env, "A"),
-        &s(&t.env, ""),
-    );
+    t.tip_client().register(&alice, &Symbol::new(&t.env, "alice"), &s(&t.env, "A"), &s(&t.env, ""));
 
     t.tip_client().tip(&bob, &alice, &t.token_id, &0, &s(&t.env, ""));
 }
@@ -707,17 +637,13 @@ fn test_withdraw_transfers_tokens_to_creator() {
     );
 
     t.stellar_client().mint(&bob, &10_000);
-    t.tip_client()
-        .tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
 
     let alice_balance_before = t.token_client().balance(&alice);
 
     t.tip_client().withdraw(&alice, &t.token_id, &400);
 
-    assert_eq!(
-        t.token_client().balance(&alice),
-        alice_balance_before + 400
-    );
+    assert_eq!(t.token_client().balance(&alice), alice_balance_before + 400);
 
     assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 600);
 }
@@ -736,8 +662,7 @@ fn test_withdraw_full_balance() {
 
     let bob = Address::generate(&t.env);
     t.stellar_client().mint(&bob, &10_000);
-    t.tip_client()
-        .tip(&bob, &alice, &t.token_id, &777, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &t.token_id, &777, &s(&t.env, ""));
 
     t.tip_client().withdraw(&alice, &t.token_id, &777);
     assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 0);
@@ -761,8 +686,7 @@ fn test_withdraw_not_creator_fails() {
 
     let bob = Address::generate(&t.env);
     t.stellar_client().mint(&bob, &10_000);
-    t.tip_client()
-        .tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
 
     t.tip_client().withdraw(&rando, &t.token_id, &100);
 }
@@ -789,12 +713,7 @@ fn test_withdraw_zero_fails() {
     let t = TestEnv::new();
     let alice = Address::generate(&t.env);
 
-    t.tip_client().register(
-        &alice,
-        &Symbol::new(&t.env, "alice"),
-        &s(&t.env, "A"),
-        &s(&t.env, ""),
-    );
+    t.tip_client().register(&alice, &Symbol::new(&t.env, "alice"), &s(&t.env, "A"), &s(&t.env, ""));
 
     t.tip_client().withdraw(&alice, &t.token_id, &0);
 }
@@ -821,11 +740,9 @@ fn test_multiple_token_balances() {
     t.stellar_client().mint(&bob, &100_000);
     t2_sac.mint(&bob, &50_000);
 
-    t.tip_client()
-        .tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
 
-    t.tip_client()
-        .tip(&bob, &alice, &token2_id, &500, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &token2_id, &500, &s(&t.env, ""));
 
     assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 1_000);
     assert_eq!(t.tip_client().get_balance(&alice, &token2_id), 500);
@@ -862,8 +779,7 @@ fn test_withdraw_requires_creator_verification() {
     );
 
     t.stellar_client().mint(&bob, &10_000);
-    t.tip_client()
-        .tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
+    t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
 
     // Alice should be able to withdraw.
     t.tip_client().withdraw(&alice, &t.token_id, &100);
