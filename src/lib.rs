@@ -524,6 +524,12 @@ impl TipContract {
     /// accumulated tips.  The caller must be a registered creator.
     pub fn withdraw(env: Env, caller: Address, token: Address, amount: i128) {
         caller.require_auth();
+        check_initialized_and_not_paused(&env);
+
+        // Verify caller is a registered creator.
+        if !env.storage().instance().has(&DataKey::Profile(caller.clone())) {
+            panic_with_error!(env, TipError::CreatorNotFound);
+        }
 
         if amount <= 0 {
             panic_with_error!(env, TipError::InvalidAmount);
@@ -550,6 +556,7 @@ impl TipContract {
             env.storage()
                 .persistent()
                 .set(&balance_key, &remaining);
+            extend_persistent_ttl(&env, &balance_key);
         } else {
             env.storage().persistent().remove(&balance_key);
         }
