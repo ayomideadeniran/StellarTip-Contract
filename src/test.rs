@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
-    token, token::StellarAssetClient, vec, Address, Env, String, Symbol,
+    token, token::StellarAssetClient, Address, Env, String, Symbol,
 };
 
 use token::Client as TokenClient;
@@ -44,7 +44,7 @@ impl TestEnv {
             network_id: Default::default(),
             base_reserve: 10,
             min_persistent_entry_ttl: 10,
-            max_entry_ttl: 100_000,
+            max_entry_ttl: 1_000_000,
             min_temp_entry_ttl: 10,
         });
 
@@ -86,7 +86,7 @@ impl TestEnv {
             network_id: Default::default(),
             base_reserve: 10,
             min_persistent_entry_ttl: 10,
-            max_entry_ttl: 100_000,
+            max_entry_ttl: 1_000_000,
             min_temp_entry_ttl: 10,
         });
 
@@ -267,6 +267,24 @@ fn test_set_fee_recipient() {
     let new_recipient = Address::generate(&t.env);
     t.tip_client().set_fee_recipient(&t.admin, &new_recipient);
     assert_eq!(t.tip_client().get_fee_recipient(), Some(new_recipient));
+}
+
+#[test]
+#[should_panic(expected = "#11")]
+fn test_set_admin_unauthorized_fails() {
+    let t = TestEnv::new();
+    let rando = Address::generate(&t.env);
+    let new_admin = Address::generate(&t.env);
+    t.tip_client().set_admin(&rando, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "#11")]
+fn test_set_fee_recipient_unauthorized_fails() {
+    let t = TestEnv::new();
+    let rando = Address::generate(&t.env);
+    let new_recipient = Address::generate(&t.env);
+    t.tip_client().set_fee_recipient(&rando, &new_recipient);
 }
 
 #[test]
@@ -465,6 +483,26 @@ fn test_unregister_with_balance_fails() {
     t.stellar_client().mint(&bob, &10_000);
     t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
     t.tip_client().unregister(&alice);
+}
+
+#[test]
+fn test_unregister_after_full_withdraw() {
+    let t = TestEnv::new();
+    let alice = Address::generate(&t.env);
+    let bob = Address::generate(&t.env);
+    t.tip_client().register(
+        &alice,
+        &Symbol::new(&t.env, "alice"),
+        &s(&t.env, "Alice"),
+        &s(&t.env, ""),
+    );
+    t.stellar_client().mint(&bob, &10_000);
+    t.tip_client().tip(&bob, &alice, &t.token_id, &1_000, &s(&t.env, ""));
+    t.tip_client().withdraw(&alice, &t.token_id, &1_000);
+    assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 0);
+    assert_eq!(t.tip_client().get_all_tokens(&alice).len(), 0);
+    t.tip_client().unregister(&alice);
+    assert!(!t.tip_client().is_creator(&alice));
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +741,8 @@ fn test_withdraw_full_balance() {
 
     t.tip_client().withdraw(&alice, &t.token_id, &777);
     assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 0);
+    let tokens = t.tip_client().get_all_tokens(&alice);
+    assert_eq!(tokens.len(), 0);
 }
 
 #[test]
@@ -797,6 +837,10 @@ fn test_multiple_token_balances() {
     t.tip_client().withdraw(&alice, &token2_id, &200);
     assert_eq!(t.tip_client().get_balance(&alice, &token2_id), 300);
     assert_eq!(t.tip_client().get_balance(&alice, &t.token_id), 1_000);
+
+    let tokens_after = t.tip_client().get_all_tokens(&alice);
+    assert!(tokens_after.contains(&token2_id));
+    assert!(tokens_after.contains(&t.token_id));
 }
 
 // ---------------------------------------------------------------------------
