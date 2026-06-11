@@ -621,6 +621,43 @@ impl TipContract {
             .instance()
             .has(&DataKey::UsernameToAddress(username))
     }
+
+    /// Return the list of tokens a creator has received tips in.
+    pub fn get_all_tokens(env: Env, creator: Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CreatorTokens(creator))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return the contract version.
+    pub fn get_contract_version(env: Env) -> u32 {
+        let _ = env; // suppress unused warning when version is a const
+        CONTRACT_VERSION
+    }
+
+    /// Return the admin address.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Return whether the contract is paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Return the current platform fee in basis points.
+    pub fn get_fee_percentage(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
+    }
+
+    /// Return the fee recipient address.
+    pub fn get_fee_recipient(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::FeeRecipient)
+    }
 }
 
 // ---------------------------------------------------------------------------
