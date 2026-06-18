@@ -595,7 +595,6 @@ impl TipContract {
         for i in start..end {
             let key = DataKey::Tip(creator.clone(), i);
             if let Some(tip) = env.storage().persistent().get(&key) {
-                extend_persistent_ttl(&env, &key);
                 results.push_back(tip);
             }
         }
